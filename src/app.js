@@ -10,7 +10,7 @@ const upload = multer({
     fileSize: 8 * 1024 * 1024
   },
   fileFilter: (_req, file, cb) => {
-    if (!file.mimetype || !file.mimetype.startsWith("image/")) {
+    if (!file.mimetype?.startsWith("image/")) {
       cb(new Error("Only image uploads are supported."));
       return;
     }
@@ -28,7 +28,7 @@ app.get("/health", (_req, res) => {
 
 app.post("/analyze", upload.single("image"), async (req, res, next) => {
   try {
-    if (!req.file || !req.file.buffer) {
+    if (!req.file?.buffer) {
       res.status(400).json({
         error: "Field 'image' with multipart/form-data is required."
       });
@@ -55,7 +55,7 @@ app.post("/analyze", upload.single("image"), async (req, res, next) => {
 });
 
 app.use((err, _req, res, _next) => {
-  const message = err && err.message ? err.message : "Internal server error";
+  const message = err?.message || "Internal server error";
   const statusCode = /image|multipart|file/i.test(message) ? 400 : 500;
 
   res.status(statusCode).json({

@@ -38,8 +38,9 @@ class HeuristicService {
     const rawScores = [
       // copper
       0.42 * clamp((warmBias + 0.15) / 0.45) +
-        0.22 * saturation +
-        0.2 * inRangeScore(brightness, 0.25, 0.82) +
+        0.3 * saturation +
+        0.2 * inRangeScore(brightness, 0.3, 0.88) +
+        0.08 * clamp((brightness - 0.45) / 0.45) +
         0.16 * modelQuality,
 
       // iron
@@ -67,17 +68,18 @@ class HeuristicService {
         0.2 * modelQuality,
 
       // wood
-      0.34 * clamp((warmBias + 0.08) / 0.35) +
-        0.28 * inRangeScore(brightness, 0.14, 0.7) +
-        0.2 * inRangeScore(variance, 0.05, 0.32) +
-        0.18 * modelQuality
+      0.33 * clamp((warmBias + 0.08) / 0.35) +
+        0.25 * inRangeScore(brightness, 0.12, 0.62) +
+        0.19 * inRangeScore(variance, 0.05, 0.32) +
+        0.2 * (1 - saturation) +
+        0.11 * modelQuality
     ].map((score) => clamp(score, 0.001, 1));
 
     const ranked = normalizeScores(rawScores);
     const primary = ranked[0];
     const secondary = ranked[1];
 
-    const blurry = variance < 0.05;
+    const blurry = variance < 0.02;
     const mixed = secondary && primary.confidence - secondary.confidence < 0.08;
 
     let finalConfidence = primary.confidence;
@@ -114,12 +116,12 @@ class HeuristicService {
   }
 
   _buildReasoning(material, metrics) {
-    const tone =
-      metrics.warmBias > 0.08
-        ? "warm tones"
-        : metrics.warmBias < -0.05
-          ? "cool tones"
-          : "neutral tones";
+    let tone = "neutral tones";
+    if (metrics.warmBias > 0.08) {
+      tone = "warm tones";
+    } else if (metrics.warmBias < -0.05) {
+      tone = "cool tones";
+    }
 
     const reflectivity = metrics.brightness > 0.62 ? "high reflectivity" : "moderate reflectivity";
     const texture = metrics.variance > 0.14 ? "visible texture variance" : "smoother surface texture";

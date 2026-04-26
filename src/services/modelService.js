@@ -1,9 +1,8 @@
-const fs = require("node:fs/promises");
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const tf = require("@tensorflow/tfjs");
-const tflite = require("@tensorflow/tfjs-tflite");
-require("@tensorflow/tfjs-backend-wasm");
+const { Interpreter } = require("node-tflite");
 const sharp = require("sharp");
 
 const IMAGE_SIZE = 224;
@@ -35,7 +34,7 @@ class ModelService {
   }
 
   async init() {
-    if (this._initPromise) {
+    if (this._initPromise !== null) {
       return this._initPromise;
     }
     this._initPromise = this._loadModels();
@@ -44,51 +43,66 @@ class ModelService {
 
   _ensureEfficientNet() {
     const root = path.resolve(__dirname, "../../");
-    const targetDir = path.join(root, "efficientnet-lite0");
-    const targetModelFp32 = path.join(targetDir, "efficientnet-lite0-fp32.tflite");
+    const targetModelFp32 = path.join(root, "efficientnet-lite0", "efficientnet-lite0-fp32.tflite");
 
-    return fs
+    return fsp
       .access(targetModelFp32)
       .catch(() => {
         const tarFile = path.join(root, "efficientnet-lite0.tar.gz");
         try {
           execFileSync("tar", ["-xzf", tarFile], { cwd: root, stdio: "ignore" });
-        } catch (error) {
-          // Keep startup resilient; service can still work with a single model.
+        } catch (error_) {
+          console.warn("EfficientNet archive extraction failed; continuing with available models.", error_.message);
         }
       })
-      .then(() => ({ targetDir, targetModelFp32 }));
+      .then(() => targetModelFp32);
   }
 
-  async _loadModelFromPath(name, modelPath) {
-    const bytes = await fs.readFile(modelPath);
-    const model = await tflite.loadTFLiteModel(new Uint8Array(bytes));
-    this._models.push({ name, model, modelPath });
+  _detectOutputLength(interpreter) {
+    const output = interpreter.outputs?.[0] ?? null;
+    const dims = output?.dims;
+    if (Array.isArray(dims) && dims.length > 0) {
+      const computed = dims.reduce((acc, value) => acc * value, 1);
+      if (Number.isFinite(computed) && computed > 0) {
+        return computed;
+      }
+    }
+    return 1001;
+  }
+
+  _loadModelFromPath(name, modelPath) {
+    const bytes = fs.readFileSync(modelPath);
+    const interpreter = new Interpreter(bytes);
+    interpreter.allocateTensors();
+
+    this._models.push({
+      name,
+      interpreter,
+      modelPath,
+      outputLength: this._detectOutputLength(interpreter)
+    });
   }
 
   async _loadModels() {
     const root = path.resolve(__dirname, "../../");
     const mobileNetPath = path.join(root, "mobilenet_v2_1.0_224.tflite");
 
-    await tf.setBackend("wasm");
-    await tf.ready();
-
-    const { targetModelFp32 } = await this._ensureEfficientNet();
+    const targetModelFp32 = await this._ensureEfficientNet();
     const efficientInt8Path = path.join(root, "efficientnet-lite0", "efficientnet-lite0-int8.tflite");
 
     try {
-      await this._loadModelFromPath("mobilenet_v2", mobileNetPath);
+      this._loadModelFromPath("mobilenet_v2", mobileNetPath);
     } catch (error) {
       throw new Error(`Failed to load MobileNet model at ${mobileNetPath}: ${error.message}`);
     }
 
     try {
-      await this._loadModelFromPath("efficientnet_lite0", targetModelFp32);
-    } catch (errorFp32) {
+      this._loadModelFromPath("efficientnet_lite0", targetModelFp32);
+    } catch (error_) {
       try {
-        await this._loadModelFromPath("efficientnet_lite0_int8", efficientInt8Path);
-      } catch (errorInt8) {
-        // Allow startup with one model if EfficientNet is unavailable.
+        this._loadModelFromPath("efficientnet_lite0_int8", efficientInt8Path);
+      } catch (error_) {
+        console.warn("EfficientNet model unavailable; running with MobileNet only.", error_.message);
       }
     }
 
@@ -118,9 +132,9 @@ class ModelService {
       const g = data[i * 3 + 1];
       const b = data[i * 3 + 2];
 
-      normalized[i * 3] = r / 255;
-      normalized[i * 3 + 1] = g / 255;
-      normalized[i * 3 + 2] = b / 255;
+      normalized[i * 3] = (r / 127.5) - 1;
+      normalized[i * 3 + 1] = (g / 127.5) - 1;
+      normalized[i * 3 + 2] = (b / 127.5) - 1;
 
       sumR += r;
       sumG += g;
@@ -137,23 +151,20 @@ class ModelService {
     };
   }
 
-  async _runSingleModel(modelEntry, inputArray) {
-    const inputTensor = tf.tensor4d(inputArray, [1, IMAGE_SIZE, IMAGE_SIZE, 3], "float32");
+  _runSingleModel(modelEntry, inputArray) {
+    const input = new Float32Array(inputArray);
+    const output = new Float32Array(modelEntry.outputLength);
 
-    try {
-      const outputTensor = modelEntry.model.predict(inputTensor);
-      const outputData = Array.from(await outputTensor.data());
-      outputTensor.dispose();
+    modelEntry.interpreter.inputs[0].copyFrom(input);
+    modelEntry.interpreter.invoke();
+    modelEntry.interpreter.outputs[0].copyTo(output);
 
-      const probabilities = softmax(outputData);
-      return {
-        modelName: modelEntry.name,
-        probabilities,
-        outputLength: probabilities.length
-      };
-    } finally {
-      inputTensor.dispose();
-    }
+    const probabilities = softmax(Array.from(output));
+    return {
+      modelName: modelEntry.name,
+      probabilities,
+      outputLength: probabilities.length
+    };
   }
 
   _buildFallbackProbabilities(meanRGB) {
@@ -209,9 +220,10 @@ class ModelService {
 
     for (const modelEntry of this._models) {
       try {
-        const result = await this._runSingleModel(modelEntry, preprocessed.input);
+        const result = this._runSingleModel(modelEntry, preprocessed.input);
         outputs.push(result);
-      } catch (error) {
+      } catch (error_) {
+        console.warn(`Inference failed for ${modelEntry.name}; skipping this model.`, error_.message);
         this._fallbackMode = true;
       }
     }

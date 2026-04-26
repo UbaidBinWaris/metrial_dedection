@@ -25,8 +25,10 @@ function makeBuffer(pixelWriter) {
   return buffer;
 }
 
-function withNoise(value, amount) {
-  const noise = (Math.random() * 2 - 1) * amount;
+function withNoise(value, amount, x, y, salt) {
+  const seed = Math.sin((x + 1) * 12.9898 + (y + 1) * 78.233 + salt * 37.719) * 43758.5453;
+  const unit = seed - Math.floor(seed);
+  const noise = (unit * 2 - 1) * amount;
   return Math.max(0, Math.min(255, Math.round(value + noise)));
 }
 
@@ -40,9 +42,9 @@ async function generateCopper(outPath) {
   const raw = makeBuffer((x, y) => {
     const gradX = x / WIDTH;
     const gradY = y / HEIGHT;
-    const r = withNoise(160 + gradX * 70 + gradY * 20, 20);
-    const g = withNoise(90 + gradX * 35, 14);
-    const b = withNoise(50 + gradY * 15, 10);
+    const r = withNoise(160 + gradX * 70 + gradY * 20, 20, x, y, 1);
+    const g = withNoise(90 + gradX * 35, 14, x, y, 2);
+    const b = withNoise(50 + gradY * 15, 10, x, y, 3);
     return [r, g, b];
   });
 
@@ -53,7 +55,7 @@ async function generateIron(outPath) {
   const raw = makeBuffer((x, y) => {
     const stripe = ((x + y) % 40) < 20 ? 1 : -1;
     const base = 120 + stripe * 12;
-    const value = withNoise(base, 24);
+    const value = withNoise(base, 24, x, y, 4);
     return [value, value - 4, value + 3];
   });
 
@@ -63,9 +65,9 @@ async function generateIron(outPath) {
 async function generatePlastic(outPath) {
   const raw = makeBuffer((x, y) => {
     const grad = x / WIDTH;
-    const r = withNoise(25 + grad * 35, 10);
-    const g = withNoise(80 + (y / HEIGHT) * 40, 12);
-    const b = withNoise(170 + grad * 60, 20);
+    const r = withNoise(25 + grad * 35, 10, x, y, 5);
+    const g = withNoise(80 + (y / HEIGHT) * 40, 12, x, y, 6);
+    const b = withNoise(170 + grad * 60, 20, x, y, 7);
     return [r, g, b];
   });
 
