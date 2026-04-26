@@ -1,0 +1,26 @@
+{
+  "name": "material-detection-service",
+  "version": "1.0.0",
+  "description": "CPU-optimized material detection microservice using TensorFlow Lite",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test tests/**/*.test.js",
+    "generate:fixtures": "node scripts/generateRealImages.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-wasm": "^4.22.0",
+    "@tensorflow/tfjs-tflite": "^0.0.1-alpha.10",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.2",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.1"
+  }
+}
