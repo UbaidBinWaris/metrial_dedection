@@ -41,7 +41,7 @@ async function testBatch() {
         const formData = new FormData();
         formData.append('image', fileBlob, file);
         
-        const response = await fetch('http://localhost:3000/analyze', {
+        const response = await fetch('http://localhost:3023/analyze', {
           method: 'POST',
           body: formData
         });
