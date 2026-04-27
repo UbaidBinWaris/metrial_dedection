@@ -3,16 +3,57 @@ const path = require("node:path");
 const embeddingService = require("./embeddingService");
 
 const allowedMap = {
+  // Plastic
   bottle: "plastic",
   cup: "plastic",
   bag: "plastic",
+  remote: "plastic",
+  mouse: "plastic",
+  keyboard: "plastic",
+  toothbrush: "plastic",
+  frisbee: "plastic",
+  suitcase: "plastic",
+  umbrella: "plastic",
+  tv: "plastic",
+  clock: "plastic",
+  phone: "plastic",
+  "cell phone": "plastic",
+  // Metal
   can: "metal",
   laptop: "metal",
-  "cell phone": "metal",
-  phone: "metal",
+  microwave: "metal",
+  oven: "metal",
+  toaster: "metal",
+  sink: "metal",
+  refrigerator: "metal",
+  scissors: "metal",
+  knife: "metal",
+  fork: "metal",
+  spoon: "metal",
+  car: "metal",
+  bicycle: "metal",
+  motorcycle: "metal",
+  truck: "metal",
+  train: "metal",
+  // Copper / wire
   wire: "copper",
-  mouse: "plastic",
-  keyboard: "plastic"
+  cable: "copper",
+  cord: "copper",
+  // Wood
+  chair: "wood",
+  bench: "wood",
+  "dining table": "wood",
+  table: "wood",
+  "baseball bat": "wood",
+  skateboard: "wood",
+  // Cardboard / paper
+  book: "cardboard",
+  cardboard: "cardboard",
+  box: "cardboard",
+  // Glass
+  "wine glass": "glass",
+  vase: "glass",
+  bottle_glass: "glass"
 };
 
 let Wd = 0.6;
@@ -83,6 +124,52 @@ function computeCopperScore(features) {
   return clamp(score, 0, 1);
 }
 
+function computeWoodScore(features) {
+  const averageColor = features?.averageColor || {};
+  const red = averageColor.red || 0;
+  const green = averageColor.green || 0;
+  const blue = averageColor.blue || 0;
+  const { metallicScore = 0, saturation = 0, brightness = 0, variance = 0 } = features;
+  // Wood: warm brown/tan tones, medium brightness, medium texture variance, low metallic
+  const warmth = clamp(red - blue, 0, 1);
+  const brownBias = clamp((red * 0.6) + (green * 0.3) - (blue * 0.5), 0, 1);
+  const mediumBrightness = 1 - Math.abs(brightness - 0.45) * 2;  // peaks at 0.45
+  const textureContrib = clamp(variance * 8, 0, 1);  // wood has grain/texture
+  return clamp(warmth * brownBias * (1 - metallicScore) * Math.max(0, mediumBrightness) * (0.5 + 0.5 * textureContrib), 0, 1);
+}
+
+function computeCardboardScore(features) {
+  const averageColor = features?.averageColor || {};
+  const red = averageColor.red || 0;
+  const green = averageColor.green || 0;
+  const blue = averageColor.blue || 0;
+  const { metallicScore = 0, saturation = 0, brightness = 0 } = features;
+  // Cardboard: beige/tan, low saturation, medium-high brightness, flat texture
+  const beigeScore = clamp(red - blue, 0, 1) * clamp(red - ((red - green) * 2), 0, 1);
+  const lowSatFactor = 1 - saturation;
+  const mediumBrightness = 1 - Math.abs(brightness - 0.6) * 2;  // peaks at 0.6
+  return clamp(beigeScore * lowSatFactor * (1 - metallicScore) * Math.max(0, mediumBrightness), 0, 1);
+}
+
+function computeGlassScore(features) {
+  const { metallicScore = 0, saturation = 0, brightness = 0, highlightRatio = 0 } = features;
+  // Glass: high brightness, low saturation, some highlights, not metallic
+  const clearFactor = (1 - saturation) * brightness;
+  const transparencyHint = clamp(highlightRatio * 2, 0, 1);
+  return clamp(clearFactor * (1 - metallicScore) * (0.5 + 0.5 * transparencyHint), 0, 1);
+}
+
+function computeAluminumScore(features) {
+  const averageColor = features?.averageColor || {};
+  const red = averageColor.red || 0;
+  const green = averageColor.green || 0;
+  const blue = averageColor.blue || 0;
+  const { metallicScore = 0, saturation = 0, brightness = 0, highlightRatio = 0 } = features;
+  // Aluminum: very neutral (near-equal R/G/B), highly reflective, silver-ish
+  const channelBalance = 1 - clamp(Math.abs(red - green) + Math.abs(green - blue) + Math.abs(red - blue), 0, 1);
+  return clamp(metallicScore * channelBalance * (1 - saturation) * (0.4 + 0.6 * highlightRatio), 0, 1);
+}
+
 function buildAlternatives(normalizedScores, finalMaterial) {
   const ranked = Object.entries(normalizedScores)
     .filter(([material]) => material !== finalMaterial)
@@ -146,16 +233,22 @@ function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSu
   const rawPlastic = computePlasticScore(features);
   const rawRubber = computeRubberScore(features);
   const rawCopper = computeCopperScore(features);
-  const glassScore = Math.max(0, (1 - (features.saturation || 0)) * (features.brightness || 0) - (features.metallicScore || 0));
+  const rawWood = computeWoodScore(features);
+  const rawCardboard = computeCardboardScore(features);
+  const rawGlass = computeGlassScore(features);
+  const rawAluminum = computeAluminumScore(features);
 
-  console.log(`[Fusion] Raw feature scores: { metal: ${rawMetal.toFixed(4)}, plastic: ${rawPlastic.toFixed(4)}, rubber: ${rawRubber.toFixed(4)}, copper: ${rawCopper.toFixed(4)} }`);
+  console.log(`[Fusion] Raw feature scores: { metal: ${rawMetal.toFixed(4)}, plastic: ${rawPlastic.toFixed(4)}, rubber: ${rawRubber.toFixed(4)}, copper: ${rawCopper.toFixed(4)}, wood: ${rawWood.toFixed(4)}, cardboard: ${rawCardboard.toFixed(4)}, glass: ${rawGlass.toFixed(4)}, aluminum: ${rawAluminum.toFixed(4)} }`);
 
   // Assign features multiplied by Wf
   featureScores["metal"] = rawMetal * Wf;
   featureScores["plastic"] = rawPlastic * Wf;
   featureScores["rubber"] = rawRubber * Wf;
   featureScores["copper"] = rawCopper * Wf;
-  if (glassScore > 0) featureScores["glass"] = glassScore * Wf;
+  featureScores["wood"] = rawWood * Wf;
+  featureScores["cardboard"] = rawCardboard * Wf;
+  featureScores["glass"] = rawGlass * Wf;
+  featureScores["aluminum"] = rawAluminum * Wf;
 
   // STEP 3 - FEATURE PENALTY (METAL REQUIRES EVIDENCE)
   if (!hasDetection) {
@@ -163,16 +256,54 @@ function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSu
   }
 
   // STEP 4 - CLASSIFICATION (Low Impact, Safe Labels Only)
+  // Extended keyword → material map for ImageNet labels
+  const classKeywords = {
+    // Plastic
+    "plastic": "plastic", "polypropylene": "plastic", "polyethylene": "plastic",
+    "nylon": "plastic", "vinyl": "plastic", "pvc": "plastic", "acrylic": "plastic",
+    "bottle": "plastic", "container": "plastic", "bucket": "plastic",
+    // Metal
+    "metal": "metal", "steel": "metal", "iron": "metal", "chrome": "metal",
+    "zinc": "metal", "nickel": "metal", "alloy": "metal",
+    "pipe": "metal", "rod": "metal", "bolt": "metal", "screw": "metal", "nail": "metal",
+    // Aluminum
+    "aluminum": "aluminum", "aluminium": "aluminum", "foil": "aluminum",
+    // Copper / Wire
+    "copper": "copper", "wire": "copper", "cable": "copper", "cord": "copper",
+    "coil": "copper", "circuit": "copper",
+    // Wood
+    "wood": "wood", "wooden": "wood", "timber": "wood", "plank": "wood",
+    "lumber": "wood", "log": "wood", "oak": "wood", "pine": "wood", "teak": "wood",
+    "mahogany": "wood", "bamboo": "wood",
+    // Cardboard / Paper
+    "cardboard": "cardboard", "paper": "cardboard", "carton": "cardboard",
+    "box": "cardboard", "packaging": "cardboard",
+    // Rubber
+    "rubber": "rubber", "silicone": "rubber", "tire": "rubber", "tyre": "rubber",
+    // Glass
+    "glass": "glass", "crystal": "glass", "ceramic": "glass",
+  };
+
   if (classificationSummary?.certainty > 0.05) {
     const labels = classificationSummary?.labels || [];
     for (const item of labels) {
       if (item.score > 0.05) {
         const label = normalizeLabel(item.label);
         let matchedMaterial = null;
-        for (const [key, val] of Object.entries(allowedMap)) {
-          if (label.includes(key)) {
-            matchedMaterial = val;
+        // Check extended classification keywords first
+        for (const [keyword, mat] of Object.entries(classKeywords)) {
+          if (label.includes(keyword)) {
+            matchedMaterial = mat;
             break;
+          }
+        }
+        // Fallback to allowedMap
+        if (!matchedMaterial) {
+          for (const [key, val] of Object.entries(allowedMap)) {
+            if (label.includes(key.replaceAll(" ", "_"))) {
+              matchedMaterial = val;
+              break;
+            }
           }
         }
         if (matchedMaterial) {

@@ -19,20 +19,52 @@ const COCO_LABELS = [
 ];
 
 const MATERIAL_MAP = {
+  // Plastic items
   "bottle": "plastic",
   "cup": "plastic",
   "bowl": "plastic",
   "handbag": "plastic",
   "bag": "plastic",
+  "remote": "plastic",
+  "toothbrush": "plastic",
+  "mouse": "plastic",
+  "keyboard": "plastic",
+  "frisbee": "plastic",
+  "suitcase": "plastic",
+  "umbrella": "plastic",
+  // Metal items
   "laptop": "metal",
   "microwave": "metal",
   "oven": "metal",
   "toaster": "metal",
   "sink": "metal",
   "refrigerator": "metal",
-  "book": "paper",
   "scissors": "metal",
-  "cell phone": "mixed"
+  "knife": "metal",
+  "fork": "metal",
+  "spoon": "metal",
+  "car": "metal",
+  "bicycle": "metal",
+  "motorcycle": "metal",
+  "truck": "metal",
+  "train": "metal",
+  "can": "metal",
+  // Wood items
+  "chair": "wood",
+  "bench": "wood",
+  "dining table": "wood",
+  "baseball bat": "wood",
+  "skateboard": "wood",
+  // Cardboard / paper
+  "book": "cardboard",
+  "suitcase": "cardboard",
+  // Glass items
+  "wine glass": "glass",
+  "vase": "glass",
+  // Copper / wire
+  "cell phone": "plastic",
+  "tv": "plastic",
+  "clock": "plastic"
 };
 
 async function getSession() {
