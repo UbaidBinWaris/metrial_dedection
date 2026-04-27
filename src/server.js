@@ -1,14 +1,13 @@
 const { app } = require("./app");
-const modelService = require("./services/modelService");
+const modelLoader = require("./models/modelLoader");
 
 const PORT = Number(process.env.PORT || 3000);
 
 async function bootstrap() {
-  await modelService.init();
+  await modelLoader.initialize();
 
   app.listen(PORT, () => {
-    console.log(`Material detection service running on port ${PORT}`);
-    console.log(`Model load count: ${modelService.getLoadCount()}`);
+    process.stdout.write(`material-detection service listening on port ${PORT}\n`);
   });
 }
 

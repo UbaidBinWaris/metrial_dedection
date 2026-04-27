@@ -1,3 +1,22 @@
 model.tar.gz
+*.zip
+*.tar.gz
+models/DATASET/
+models/Material_dataset/
+models/Hazardous/
+models/Non-Recyclable/
+models/Organic/
+models/Recyclable/
+models/dataset/
+models/dtd/
+models/dtd-r1.0.1/
+efficientnet-lite0/
 
 node_modules/
+
+.ven-yolo/
+yolo-venv/
+.venv-tf/
+venv-torch/
+
+.serena

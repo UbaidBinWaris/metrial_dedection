@@ -1,0 +1,3 @@
+# TFLite conversion environment (Python 3.12 required — TF does not support 3.13+)
+tensorflow==2.17.0
+numpy<2.0

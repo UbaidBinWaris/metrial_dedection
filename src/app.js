@@ -1,62 +1,23 @@
 const express = require("express");
-const multer = require("multer");
-const modelService = require("./services/modelService");
-const featureService = require("./services/featureService");
-const heuristicService = require("./services/heuristicService");
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 8 * 1024 * 1024
-  },
-  fileFilter: (_req, file, cb) => {
-    if (!file.mimetype?.startsWith("image/")) {
-      cb(new Error("Only image uploads are supported."));
-      return;
-    }
-    cb(null, true);
-  }
-});
+const analyzeRouter = require("./routes/analyze");
 
 const app = express();
 
+app.disable("x-powered-by");
+app.use(express.json({ limit: "1mb" }));
+
 app.get("/health", (_req, res) => {
   res.status(200).json({
-    status: "ok"
+    status: "ok",
+    service: "material-detection"
   });
 });
 
-app.post("/analyze", upload.single("image"), async (req, res, next) => {
-  try {
-    if (!req.file?.buffer) {
-      res.status(400).json({
-        error: "Field 'image' with multipart/form-data is required."
-      });
-      return;
-    }
-
-    const [modelInference, features] = await Promise.all([
-      modelService.infer(req.file.buffer),
-      featureService.extractFeatures(req.file.buffer)
-    ]);
-
-    const heuristic = heuristicService.combine(modelInference, features);
-
-    res.status(200).json({
-      material: heuristic.material,
-      confidence: heuristic.confidence,
-      alternatives: heuristic.alternatives,
-      features,
-      reasoning: heuristic.reasoning
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+app.use("/analyze", analyzeRouter);
 
 app.use((err, _req, res, _next) => {
   const message = err?.message || "Internal server error";
-  const statusCode = /image|multipart|file/i.test(message) ? 400 : 500;
+  const statusCode = /image|multipart|file|payload/i.test(message) ? 400 : 500;
 
   res.status(statusCode).json({
     error: message
