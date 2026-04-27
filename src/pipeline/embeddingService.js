@@ -5,6 +5,23 @@ let embeddingsDB = [];
 let classCentroids = {};
 let dbLoaded = false;
 
+const MIN_TOP_SIMILARITY = 0.7;
+const MIN_VECTOR_STDDEV = 0.00001;
+
+function clamp(value, min = 0, max = 1) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function standardDeviation(values) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => {
+    const diff = value - mean;
+    return sum + (diff * diff);
+  }, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
 function computeCentroids() {
   const sums = {};
   const counts = {};
@@ -49,7 +66,7 @@ function dotProduct(a, b) {
 
 function magnitude(a) {
   let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += a[i] * a[i];
+  for (const value of a) sum += value * value;
   return Math.sqrt(sum);
 }
 
@@ -80,10 +97,19 @@ function findSimilar(targetEmbedding, k = 5) {
   // Sort descending
   similarities.sort((a, b) => b.sim - a.sim);
 
+  const top1 = similarities[0] || { sim: 0 };
+  const top2 = similarities[1] || { sim: 0 };
+
   // 1. OUTLIER PROTECTION
-  if (similarities[0].sim < 0.7) {
-    console.log(`[Embedding] Outlier detected. Top similarity ${similarities[0].sim.toFixed(2)} < 0.7. Returning unknown.`);
+  if (top1.sim < MIN_TOP_SIMILARITY) {
+    console.log(`[Embedding] Outlier detected. Top similarity ${top1.sim.toFixed(2)} < ${MIN_TOP_SIMILARITY}. Returning unknown.`);
     return { material: "unknown", confidence: 0.1, source: "embedding_outlier" };
+  }
+
+  const embeddingStdDev = standardDeviation(targetEmbedding);
+  if (embeddingStdDev < MIN_VECTOR_STDDEV) {
+    console.log(`[Embedding] Low-variance embedding (${embeddingStdDev.toExponential(2)}). Returning unknown.`);
+    return { material: "unknown", confidence: 0.1, source: "embedding_low_variance" };
   }
 
   // Top K
@@ -115,12 +141,17 @@ function findSimilar(targetEmbedding, k = 5) {
   const centroidScore = centroid ? cosineSimilarity(targetEmbedding, centroid) : 0;
 
   // 5. HYBRID CONFIDENCE
-  const finalConfidence = (0.7 * knnScore) + (0.3 * centroidScore);
+  const baseConfidence = (0.7 * knnScore) + (0.3 * centroidScore);
+  const topMargin = Math.max(0, top1.sim - top2.sim);
+  const marginFactor = clamp(topMargin / 0.04, 0.25, 1);
+  const supportFactor = clamp(embeddingsDB.length / 30, 0.25, 1);
+  const varianceFactor = clamp((embeddingStdDev - MIN_VECTOR_STDDEV) / 0.00015, 0.3, 1);
+  const finalConfidence = clamp(baseConfidence * marginFactor * supportFactor * varianceFactor, 0, 1);
 
   // 6. DEBUG LOGS
   console.log(`[Embedding] Top ${k} neighbors:`);
   topK.forEach(m => console.log(`  ${m.label}: ${m.sim.toFixed(4)}`));
-  console.log(`[Embedding] Final vote: ${bestLabel} (KNN: ${knnScore.toFixed(4)}, Centroid: ${centroidScore.toFixed(4)} -> Conf: ${finalConfidence.toFixed(4)})`);
+  console.log(`[Embedding] Final vote: ${bestLabel} (KNN: ${knnScore.toFixed(4)}, Centroid: ${centroidScore.toFixed(4)}, Margin: ${topMargin.toFixed(4)}, Support: ${supportFactor.toFixed(2)}, Var: ${embeddingStdDev.toExponential(2)} -> Conf: ${finalConfidence.toFixed(4)})`);
   
   // Normalize dataset label if it matches the folder name
   if (bestLabel === "metel_iron" || bestLabel === "metal_iron") {

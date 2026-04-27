@@ -25,6 +25,24 @@ const upload = multer({
   }
 });
 
+function withFallback(stageName, fallbackValue) {
+  return async (work) => {
+    try {
+      return {
+        value: await work(),
+        warning: null
+      };
+    } catch (error) {
+      const message = error?.message || "unknown_error";
+      console.error(`[Analyze] ${stageName} failed: ${message}`);
+      return {
+        value: fallbackValue,
+        warning: `${stageName}_failed:${message}`
+      };
+    }
+  };
+}
+
 router.post("/", upload.single("image"), async (req, res, next) => {
   try {
     if (!req.file?.buffer) {
@@ -35,13 +53,48 @@ router.post("/", upload.single("image"), async (req, res, next) => {
     }
 
     const imageBuffer = req.file.buffer;
-    const [blurSummary, lightingSummary, detectionSummary, classificationSummary, featureSummary] = await Promise.all([
-      blurService.analyze(imageBuffer),
-      lightService.analyze(imageBuffer),
-      detectionService.analyze(imageBuffer),
-      classificationService.analyze(imageBuffer),
-      featureService.extract(imageBuffer)
+    const safeRun = {
+      blur: withFallback("blur", { isBlurry: false, score: 0 }),
+      lighting: withFallback("lighting", { brightness: 0.5, isTooDark: false, isTooBright: false, status: "unknown" }),
+      detection: withFallback("detection", { objects: [], degraded: true, warning: "detection unavailable" }),
+      classification: withFallback("classification", {
+        labels: [{ classId: -1, label: "unknown_material", score: 0.34 }],
+        perModel: [],
+        certainty: 0,
+        embedding: []
+      }),
+      features: withFallback("features", {
+        brightness: 0.5,
+        variance: 0,
+        saturation: 0,
+        metallicScore: 0,
+        highlightRatio: 0,
+        colorHistogram: { red: [], green: [], blue: [] },
+        averageColor: { red: 0, green: 0, blue: 0 },
+        dimensions: { width: 0, height: 0 }
+      })
+    };
+
+    const [blurResult, lightingResult, detectionResult, classificationResult, featureResult] = await Promise.all([
+      safeRun.blur(() => blurService.analyze(imageBuffer)),
+      safeRun.lighting(() => lightService.analyze(imageBuffer)),
+      safeRun.detection(() => detectionService.analyze(imageBuffer)),
+      safeRun.classification(() => classificationService.analyze(imageBuffer)),
+      safeRun.features(() => featureService.extract(imageBuffer))
     ]);
+
+    const blurSummary = blurResult.value;
+    const lightingSummary = lightingResult.value;
+    const detectionSummary = detectionResult.value;
+    const classificationSummary = classificationResult.value;
+    const featureSummary = featureResult.value;
+    const stageWarnings = [
+      blurResult.warning,
+      lightingResult.warning,
+      detectionResult.warning,
+      classificationResult.warning,
+      featureResult.warning
+    ].filter(Boolean);
 
     const fusion = fusionService.fuse({
       blurSummary,
@@ -49,7 +102,8 @@ router.post("/", upload.single("image"), async (req, res, next) => {
       detectionSummary,
       classificationSummary,
       featureSummary,
-      embedding: classificationSummary?.embedding || []
+      embedding: classificationSummary?.embedding || [],
+      stageWarnings
     });
 
     const weight = weightService.estimate(fusion.material, detectionSummary.objects, featureSummary);

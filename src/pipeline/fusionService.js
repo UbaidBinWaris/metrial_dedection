@@ -29,8 +29,8 @@ function loadWeights() {
       if (config.Wc !== undefined) Wc = config.Wc;
       console.log(`[Fusion] Loaded weights: Wd=${Wd}, Wf=${Wf}, Wc=${Wc}`);
     }
-  } catch (e) {
-    console.warn("[Fusion] Could not load fusionWeights.json, using default weights");
+  } catch (error) {
+    console.warn(`[Fusion] Could not load fusionWeights.json, using default weights (${error?.message || "unknown_error"})`);
   }
 }
 loadWeights();
@@ -44,25 +44,75 @@ function normalizeLabel(label) {
 }
 
 function computeMetalScore(features) {
-  const { metallicScore = 0, saturation = 0, brightness = 0 } = features;
-  // Bright images should NOT become metal arbitrarily
-  return metallicScore * (1 - saturation) * (1 - brightness);
+  const { metallicScore = 0, saturation = 0, brightness = 0, highlightRatio = 0 } = features;
+  // Metal should be reflective + neutral; penalize oversaturated and very dark regions.
+  return metallicScore * (1 - saturation) * (0.35 + (0.65 * highlightRatio)) * (0.4 + (0.6 * brightness));
 }
 
 function computePlasticScore(features) {
   const { metallicScore = 0, saturation = 0 } = features;
+  const averageColor = features?.averageColor || {};
+  const red = averageColor.red || 0;
+  const green = averageColor.green || 0;
+  const blue = averageColor.blue || 0;
+  const warmBias = clamp(red - ((green + blue) / 2), 0, 1);
   // Plastic is colorful + non-metallic
-  return saturation * (1 - metallicScore);
+  return saturation * (1 - metallicScore) * (1 - (0.75 * warmBias));
 }
 
 function computeRubberScore(features) {
-  const { metallicScore = 0, brightness = 0, highlightRatio = 0 } = features;
+  const { metallicScore = 0, brightness = 0, highlightRatio = 0, saturation = 0 } = features;
   // Rubber is dark, non-reflective, low texture variation
   const low_variance_factor = Math.max(0, 1 - highlightRatio);
-  return (1 - brightness) * (1 - metallicScore) * low_variance_factor;
+  const lowColorFactor = Math.max(0, 1 - (saturation * 0.7));
+  return (1 - brightness) * (1 - metallicScore) * low_variance_factor * lowColorFactor;
 }
 
-function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSummary, featureSummary, embedding }) {
+function computeCopperScore(features) {
+  const averageColor = features?.averageColor || {};
+  const red = averageColor.red || 0;
+  const green = averageColor.green || 0;
+  const blue = averageColor.blue || 0;
+  const saturation = features?.saturation || 0;
+  const warmth = clamp(red - blue, 0, 1);
+  const greenBlueSpread = clamp(green - blue, 0, 1);
+  const score = 1.5
+    * warmth
+    * (0.55 + (0.45 * saturation))
+    * (0.7 + (0.3 * greenBlueSpread));
+  return clamp(score, 0, 1);
+}
+
+function buildAlternatives(normalizedScores, finalMaterial) {
+  const ranked = Object.entries(normalizedScores)
+    .filter(([material]) => material !== finalMaterial)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 2)
+    .map(([material, confidence]) => ({
+      material,
+      confidence: Number(confidence.toFixed(4))
+    }));
+
+  if (ranked.length > 0) {
+    return ranked;
+  }
+
+  if (finalMaterial === "unknown") {
+    return [];
+  }
+
+  return [{ material: "unknown", confidence: Number((1 - (normalizedScores[finalMaterial] || 0)).toFixed(4)) }];
+}
+
+function buildQualityWarnings(blurSummary, lightingSummary) {
+  const warnings = [];
+  if (blurSummary?.isBlurry) warnings.push("TOO_BLURRY");
+  if (lightingSummary?.isTooDark) warnings.push("TOO_DARK");
+  if (lightingSummary?.isTooBright) warnings.push("TOO_BRIGHT");
+  return warnings;
+}
+
+function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSummary, featureSummary, embedding, stageWarnings = [] }) {
   const detectionScores = {};
   const featureScores = {};
   const classScores = {};
@@ -95,19 +145,21 @@ function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSu
   const rawMetal = computeMetalScore(features);
   const rawPlastic = computePlasticScore(features);
   const rawRubber = computeRubberScore(features);
+  const rawCopper = computeCopperScore(features);
   const glassScore = Math.max(0, (1 - (features.saturation || 0)) * (features.brightness || 0) - (features.metallicScore || 0));
 
-  console.log(`[Fusion] Raw feature scores: { metal: ${rawMetal.toFixed(4)}, plastic: ${rawPlastic.toFixed(4)}, rubber: ${rawRubber.toFixed(4)} }`);
+  console.log(`[Fusion] Raw feature scores: { metal: ${rawMetal.toFixed(4)}, plastic: ${rawPlastic.toFixed(4)}, rubber: ${rawRubber.toFixed(4)}, copper: ${rawCopper.toFixed(4)} }`);
 
   // Assign features multiplied by Wf
   featureScores["metal"] = rawMetal * Wf;
   featureScores["plastic"] = rawPlastic * Wf;
   featureScores["rubber"] = rawRubber * Wf;
+  featureScores["copper"] = rawCopper * Wf;
   if (glassScore > 0) featureScores["glass"] = glassScore * Wf;
 
   // STEP 3 - FEATURE PENALTY (METAL REQUIRES EVIDENCE)
   if (!hasDetection) {
-    featureScores["metal"] *= 0.5; // Strong penalty without detection
+    featureScores["metal"] *= 0.75;
   }
 
   // STEP 4 - CLASSIFICATION (Low Impact, Safe Labels Only)
@@ -174,16 +226,22 @@ function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSu
     embedMatch = embeddingService.findSimilar(embedding, 3);
   }
 
-  let finalMaterial = "unknown";
-  let finalConfidence = 0.1;
-  let decisionSource = "uncertain";
+  let finalMaterial;
+  let finalConfidence;
+  let decisionSource;
+  const strongestDetection = Math.max(...Object.values(detectionScores), 0);
+  const embeddingSupportFromFusion = embedMatch.material && embedMatch.material !== "unknown"
+    ? (normalizedScores[embedMatch.material] || 0)
+    : 0;
+  const embeddingIsReliable = embedMatch.confidence >= 0.72
+    && (strongestDetection >= 0.18 || embeddingSupportFromFusion >= 0.2);
 
-  if (embedMatch.confidence >= 0.75 && embedMatch.material !== "unknown") {
+  if (embedMatch.material !== "unknown" && embeddingIsReliable) {
     console.log(`[Decision] Using EMBEDDING (confidence: ${embedMatch.confidence.toFixed(2)})`);
     finalMaterial = embedMatch.material;
     finalConfidence = embedMatch.confidence;
     decisionSource = embedMatch.source;
-  } else if (embedMatch.confidence >= 0.5 && embedMatch.material !== "unknown") {
+  } else if (embedMatch.confidence >= 0.55 && embedMatch.material !== "unknown" && embeddingSupportFromFusion >= 0.12) {
     const fusionScore = normalizedScores[embedMatch.material] || 0;
     const hybridScore = (embedMatch.confidence * 0.7) + (fusionScore * 0.3);
     
@@ -191,31 +249,45 @@ function fuse({ blurSummary, lightingSummary, detectionSummary, classificationSu
     finalMaterial = embedMatch.material;
     finalConfidence = hybridScore;
     decisionSource = "hybrid_fusion";
+  } else if (highestNormalizedScore >= 0.4 && bestMaterial !== "unknown") {
+    console.log(`[Decision] Falling back to FUSION (confidence: ${highestNormalizedScore.toFixed(2)})`);
+    finalMaterial = bestMaterial;
+    finalConfidence = highestNormalizedScore;
+    decisionSource = "weighted_fusion";
   } else {
-    if (highestNormalizedScore >= 0.5 && bestMaterial !== "unknown") {
-      console.log(`[Decision] Falling back to FUSION (confidence: ${highestNormalizedScore.toFixed(2)})`);
-      finalMaterial = bestMaterial;
-      finalConfidence = highestNormalizedScore;
-      decisionSource = "weighted_fusion";
-    } else {
-      console.log(`[Decision] Both engines weak. Returning unknown.`);
-      finalMaterial = "unknown";
-      finalConfidence = 0.1;
-      decisionSource = "uncertain";
-    }
+    console.log(`[Decision] Both engines weak. Returning unknown.`);
+    finalMaterial = "unknown";
+    finalConfidence = 0.1;
+    decisionSource = "uncertain";
   }
 
   console.log(`[Decision] Selected: ${finalMaterial}`);
 
+  const qualityWarnings = buildQualityWarnings(blurSummary, lightingSummary);
+  const qualityPenalty = (blurSummary?.isBlurry ? 0.25 : 0)
+    + (lightingSummary?.isTooDark ? 0.18 : 0)
+    + (lightingSummary?.isTooBright ? 0.1 : 0);
+  const confidenceAfterQuality = clamp(finalConfidence * (1 - qualityPenalty), 0.05, 1);
+  const hardReject = Boolean(blurSummary?.isBlurry) && Boolean(lightingSummary?.isTooDark);
+  const accepted = !(blurSummary?.isBlurry) && !hardReject && confidenceAfterQuality >= 0.35;
+
+  const warnings = [
+    ...qualityWarnings,
+    ...(detectionSummary?.warning ? [detectionSummary.warning] : []),
+    ...stageWarnings
+  ];
+
   return {
-    accepted: !(blurSummary?.isBlurry),
+    accepted,
     material: finalMaterial,
-    confidence: Number(finalConfidence.toFixed(4)),
-    alternatives: [],
-    warnings: detectionSummary?.warning ? [detectionSummary.warning] : [],
+    confidence: Number(confidenceAfterQuality.toFixed(4)),
+    alternatives: buildAlternatives(normalizedScores, finalMaterial),
+    warnings,
     decision: { 
       source: decisionSource,
-      reasons: decisionSource === "uncertain" ? ["low-signal"] : []
+      reasons: decisionSource === "uncertain"
+        ? ["low-signal", ...qualityWarnings.map((item) => `quality:${item.toLowerCase()}`)]
+        : qualityWarnings.map((item) => `quality:${item.toLowerCase()}`)
     }
   };
 }
